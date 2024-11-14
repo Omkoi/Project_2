@@ -16,12 +16,12 @@
 // Receiver buffer to store out-of-order packets
 
 
-receiver_buffer_slot receiver_buffer[MAX_BUFFER_SIZE];
+receiver_buffer_slot receiver_buffer[WINDOW_SIZE*2];
 int next_expected_seqno = 0; // The next expected sequence number
 
 // Function to initialize the receiver buffer
 void init_receiver_buffer() {
-  for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+  for (int i = 0; i < WINDOW_SIZE*2; i++) {
     receiver_buffer[i].is_occupied = 0;
     receiver_buffer[i].pkt = NULL;
   }
@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
   clientlen = sizeof(clientaddr);
   init_receiver_buffer(); // Initialize receiver buffer
 
-  VLOG(DEBUG, "Waiting for packets...");
+  VLOG(DEBUG, "epoch time, bytes received, sequence number")
 
   // Main loop: wait for incoming packets
   while (1) {

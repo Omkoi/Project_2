@@ -16,6 +16,7 @@
 int sockfd, serverlen;
 struct sockaddr_in serveraddr;
 int window_start = 0, window_end = 0;
+int seqno_to_ack = 0;
 tcp_packet
     *sent_packets[WINDOW_SIZE]; // Store sent packets in the sliding window
 sigset_t sigmask;               // Signal mask for the timer
@@ -49,8 +50,11 @@ void stop_timer() { sigprocmask(SIG_BLOCK, &sigmask, NULL); }
 void resend_packets(int sig) {
   if (sig == SIGALRM) {
     VLOG(INFO, "Timeout happened");
+    seqno_to_ack = sent_packets[window_start % WINDOW_SIZE]->hdr.seqno;
+    printf("Sequence number to ack: %d\n", seqno_to_ack);
     tcp_packet *pkt_to_resend = sent_packets[window_start % WINDOW_SIZE];
     send_packet(pkt_to_resend); // Resend the packet
+    printf("Resending packet %d\n", pkt_to_resend->hdr.seqno);
     start_timer();              // Restart the timer
   }
 }
@@ -63,7 +67,6 @@ void send_packet(tcp_packet *pkt) {
     error("sendto");
   }
   sent_packets[window_end % WINDOW_SIZE] = pkt;
-  window_end++;
 }
 
 // Wait for acknowledgment and handle sliding the window
@@ -80,10 +83,14 @@ void wait_for_ack(int expected_seqno) {
     recvpkt = (tcp_packet *)buffer;
     VLOG(DEBUG, "Received ACK: %d", recvpkt->hdr.ackno);
 
-    if (recvpkt->hdr.ackno > window_start) {
-          printf("Sliding window: Acknowledged %d, Window Start: %d, Window End: %d\n", recvpkt->hdr.ackno, window_start, window_end);
-
+    if (recvpkt->hdr.ackno >= seqno_to_ack) {
       window_start = window_start + 1;
+      seqno_to_ack = sent_packets[window_start % WINDOW_SIZE]->hdr.seqno;
+      printf("Sequence number to ack: %d\n", seqno_to_ack);
+      printf(
+          "Sliding window: Acknowledged %d, Window Start: %d, Window End: %d\n",
+          recvpkt->hdr.ackno, window_start, window_end);
+
       // Stop the timer when the last unacknowledged packet is acknowledged
       if (window_start == window_end - 1) {
         stop_timer();
@@ -144,6 +151,7 @@ int main(int argc, char **argv) {
     // Send the packet if the window allows
     if (window_end - window_start < WINDOW_SIZE) {
       send_packet(sndpkt);
+      window_end++;
       printf("Window Start: %d, Window End: %d\n", window_start, window_end);
       printf("Sending packet %d\n", sndpkt->hdr.seqno);
     }
