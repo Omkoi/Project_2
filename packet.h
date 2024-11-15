@@ -8,6 +8,7 @@ typedef struct {
     int ackno;
     int ctr_flags;
     int data_size;
+    int packet_number;
 }tcp_header;
 
 #define WINDOW_SIZE 10

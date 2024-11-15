@@ -11,17 +11,18 @@
 #include "packet.h"
 
 #define WINDOW_SIZE 10       // Sliding window size
-#define MAX_BUFFER_SIZE 1024 // Buffer for out-of-order packets
+#define MAX_BUFFER_SIZE 20 // Buffer for out-of-order packets
 
 // Receiver buffer to store out-of-order packets
 
 
-receiver_buffer_slot receiver_buffer[WINDOW_SIZE*2];
+receiver_buffer_slot receiver_buffer[MAX_BUFFER_SIZE];
 int next_expected_seqno = 0; // The next expected sequence number
+int next_expected_packet_number = 0; // The next expected packet number
 
 // Function to initialize the receiver buffer
 void init_receiver_buffer() {
-  for (int i = 0; i < WINDOW_SIZE*2; i++) {
+  for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
     receiver_buffer[i].is_occupied = 0;
     receiver_buffer[i].pkt = NULL;
   }
@@ -30,7 +31,7 @@ void init_receiver_buffer() {
 // Function to manage buffered packets (process those that are in order)
 void manage_buffered_packets(FILE *fp) {
   while (1) {
-    int index = next_expected_seqno % MAX_BUFFER_SIZE;
+    int index = next_expected_packet_number % MAX_BUFFER_SIZE;
     if (!receiver_buffer[index].is_occupied) {
       break; // No more packets to process
     }
@@ -41,7 +42,8 @@ void manage_buffered_packets(FILE *fp) {
     printf("Processed packet %d with size %d\n", pkt->hdr.seqno,
            pkt->hdr.data_size);
 
-    next_expected_seqno++; // Increment the expected sequence number
+    next_expected_seqno = next_expected_seqno + pkt->hdr.data_size; // Increment the expected sequence number
+    next_expected_packet_number++;
     free(pkt);
     receiver_buffer[index].is_occupied = 0; // Mark slot as free
   }
@@ -51,7 +53,8 @@ void manage_buffered_packets(FILE *fp) {
 void send_ack(int sockfd, struct sockaddr_in *clientaddr, int clientlen) {
   tcp_packet *ackpkt = make_packet(0); // Empty packet for ACK
   ackpkt->hdr.ackno =
-      next_expected_seqno;     // Acknowledge the next expected sequence number
+      next_expected_seqno
+      ;     // Acknowledge the next expected sequence number
   ackpkt->hdr.ctr_flags = ACK; // Set the ACK flag
   printf("Sending ACK %d\n", ackpkt->hdr.ackno);
 
@@ -69,9 +72,11 @@ void process_packet(tcp_packet *recvpkt, FILE *fp, int sockfd,
   if (recvpkt->hdr.seqno == next_expected_seqno) {
     // If the packet is in order, write it to the file
     fwrite(recvpkt->data, 1, recvpkt->hdr.data_size, fp);
+    printf("Packet number %d written to file\n", recvpkt->hdr.packet_number);
     next_expected_seqno =
         recvpkt->hdr.seqno +
         recvpkt->hdr.data_size; // Update expected sequence number
+    next_expected_packet_number = recvpkt->hdr.packet_number + 1;
 
     // Process any buffered packets that can now be processed
     printf("Processing packet %d\n", recvpkt->hdr.seqno);
@@ -79,7 +84,10 @@ void process_packet(tcp_packet *recvpkt, FILE *fp, int sockfd,
     manage_buffered_packets(fp);
   } else if (recvpkt->hdr.seqno > next_expected_seqno) {
     // If the packet is out of order, buffer it
-    int index = recvpkt->hdr.seqno % MAX_BUFFER_SIZE;
+    printf("Out of order packet with packet number and packet seqno: %d, %d\n", recvpkt->hdr.packet_number, recvpkt->hdr.seqno);
+    int index = recvpkt->hdr.packet_number % MAX_BUFFER_SIZE;
+    //printf("Index: %d\n", index);
+
     if (!receiver_buffer[index].is_occupied) {
       printf("Buffering packet %d (out of order)\n", recvpkt->hdr.seqno);
 
@@ -157,13 +165,17 @@ int main(int argc, char **argv) {
     if (recvpkt->hdr.data_size == 0) {
       VLOG(INFO, "End of file has been reached.");
       fclose(fp);
+      close(sockfd);
       break;
     }
 
+
+    //int index = recvpkt->hdr.packet_number % MAX_BUFFER_SIZE;
+    printf("Packet number received: %d\n", recvpkt->hdr.packet_number);
+    //printf("Index: %d\n", index);
     // Process the received packet
     process_packet(recvpkt, fp, sockfd, &clientaddr, clientlen);
   }
 
-  fclose(fp);
   return 0;
 }
