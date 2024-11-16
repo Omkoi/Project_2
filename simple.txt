@@ -1,1 +1,0 @@
-This is a very simple test file to test the RDT protocol.

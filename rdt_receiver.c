@@ -10,55 +10,54 @@
 #include "common.h"
 #include "packet.h"
 
-#define WINDOW_SIZE 10       // Sliding window size
+
 #define MAX_BUFFER_SIZE 20 // Buffer for out-of-order packets
 
-// Receiver buffer to store out-of-order packets
-
-
-receiver_buffer_slot receiver_buffer[MAX_BUFFER_SIZE];
-int next_expected_seqno = 0; // The next expected sequence number
+//Array to store the receiver buffer packets
+tcp_packet *receiver_buffer_packet[MAX_BUFFER_SIZE];
+int next_expected_seqno = 0;         // The next expected sequence number
 int next_expected_packet_number = 0; // The next expected packet number
 
-// Function to initialize the receiver buffer
-void init_receiver_buffer() {
+
+//Initializing the receiver buffer packet to NULL
+void init_receiver_buffer_packet() {
   for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
-    receiver_buffer[i].is_occupied = 0;
-    receiver_buffer[i].pkt = NULL;
+    receiver_buffer_packet[i] = NULL;
   }
 }
 
-// Function to manage buffered packets (process those that are in order)
-void manage_buffered_packets(FILE *fp) {
-  while (1) {
-    int index = next_expected_packet_number % MAX_BUFFER_SIZE;
-    if (!receiver_buffer[index].is_occupied) {
-      break; // No more packets to process
-    }
-    // Process the packet (write to file and free the buffer slot)
-    tcp_packet *pkt = receiver_buffer[index].pkt;
-    fseek(fp, pkt->hdr.seqno, SEEK_SET);
-    fwrite(pkt->data, 1, pkt->hdr.data_size, fp);
-    printf("Processed packet %d with size %d\n", pkt->hdr.seqno,
-           pkt->hdr.data_size);
+void send_ack(tcp_packet *recvpkt, int sockfd, struct sockaddr_in *clientaddr,
+              int clientlen) {
 
-    next_expected_seqno = next_expected_seqno + pkt->hdr.data_size; // Increment the expected sequence number
-    next_expected_packet_number++;
-    free(pkt);
-    receiver_buffer[index].is_occupied = 0; // Mark slot as free
-  }
-}
 
-// Function to send an acknowledgment for the next expected sequence number
-void send_ack(int sockfd, struct sockaddr_in *clientaddr, int clientlen) {
+  
   tcp_packet *ackpkt = make_packet(0); // Empty packet for ACK
-  ackpkt->hdr.ackno =
-      next_expected_seqno
-      ;     // Acknowledge the next expected sequence number
-  ackpkt->hdr.ctr_flags = ACK; // Set the ACK flag
+  ackpkt->hdr.ctr_flags = ACK;
+
+  // Final acknowledgement of the end of the file received.
+  if (recvpkt->hdr.data_size == 0) {
+    printf("Sending ack for the end of file packet received\n");
+    ackpkt->hdr.ackno = 0;
+  }
+
+  //Indicating the duplicate acknowledgement
+  else if (recvpkt->hdr.seqno > next_expected_seqno) {
+    ackpkt->hdr.ackno = -1;
+  }
+
+  else if (next_expected_seqno > recvpkt->hdr.seqno) {
+    ackpkt->hdr.ackno = next_expected_seqno;
+  }
+
+  else {
+    next_expected_seqno = next_expected_seqno + recvpkt->hdr.data_size; //Increasing the next expected sequence number
+    next_expected_packet_number++;
+    ackpkt->hdr.ackno = next_expected_seqno;     // Next acknowledgement number is the next expected sequence number
+    }                 // Set the ACK flag
+
+
   printf("Sending ACK %d\n", ackpkt->hdr.ackno);
 
-  // Send the ACK to the sender
   if (sendto(sockfd, ackpkt, TCP_HDR_SIZE, 0, (struct sockaddr *)clientaddr,
              clientlen) < 0) {
     error("ERROR in sendto");
@@ -66,43 +65,70 @@ void send_ack(int sockfd, struct sockaddr_in *clientaddr, int clientlen) {
   free(ackpkt);
 }
 
-// Function to process a received packet
-void process_packet(tcp_packet *recvpkt, FILE *fp, int sockfd,
-                    struct sockaddr_in *clientaddr, int clientlen) {
-  if (recvpkt->hdr.seqno == next_expected_seqno) {
-    // If the packet is in order, write it to the file
-    fwrite(recvpkt->data, 1, recvpkt->hdr.data_size, fp);
-    printf("Packet number %d written to file\n", recvpkt->hdr.packet_number);
-    next_expected_seqno =
-        recvpkt->hdr.seqno +
-        recvpkt->hdr.data_size; // Update expected sequence number
-    next_expected_packet_number = recvpkt->hdr.packet_number + 1;
 
-    // Process any buffered packets that can now be processed
-    printf("Processing packet %d\n", recvpkt->hdr.seqno);
 
-    manage_buffered_packets(fp);
-  } else if (recvpkt->hdr.seqno > next_expected_seqno) {
-    // If the packet is out of order, buffer it
-    printf("Out of order packet with packet number and packet seqno: %d, %d\n", recvpkt->hdr.packet_number, recvpkt->hdr.seqno);
-    int index = recvpkt->hdr.packet_number % MAX_BUFFER_SIZE;
-    //printf("Index: %d\n", index);
+void write_to_file(tcp_packet *rcvpkt, FILE *fp) {
+  printf("Packet size : %d, Packet number: %d, Packet seqno: %d written to file\n", rcvpkt->hdr.data_size, rcvpkt->hdr.packet_number, rcvpkt->hdr.seqno);
+  fwrite(rcvpkt->data, 1, rcvpkt->hdr.data_size, fp);
+  fflush(fp);
+  
+}
 
-    if (!receiver_buffer[index].is_occupied) {
-      printf("Buffering packet %d (out of order)\n", recvpkt->hdr.seqno);
 
-      receiver_buffer[index].pkt =
-          malloc(TCP_HDR_SIZE + recvpkt->hdr.data_size);
-      memcpy(receiver_buffer[index].pkt, recvpkt,
-             TCP_HDR_SIZE + recvpkt->hdr.data_size);
-      receiver_buffer[index].is_occupied = 1;
+
+void buffer_packet(tcp_packet *rcvpkt) {
+  for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+
+    if (receiver_buffer_packet[i] == NULL) {
+      receiver_buffer_packet[i] = rcvpkt;
+      break;
     }
   }
-
-  // Send acknowledgment for the next expected sequence number
-  send_ack(sockfd, clientaddr, clientlen);
-  printf("Sent ACK %d\n", next_expected_seqno);
 }
+
+
+void manage_buffered_packet(tcp_packet *rcvpkt, int sockfd, struct sockaddr_in *clientaddr, int clientlen, FILE *fp) {
+
+  //Go through the whole list of buffered packets
+  for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
+    if (receiver_buffer_packet[i] == NULL) {
+      continue;
+    }
+    else {
+      if (receiver_buffer_packet[i]->hdr.seqno == next_expected_seqno) {
+        send_ack(rcvpkt, sockfd, clientaddr,  clientlen);
+        write_to_file(receiver_buffer_packet[i], fp);
+        printf("Written from buffer \n");
+        free(receiver_buffer_packet[i]);
+        receiver_buffer_packet[i] = NULL;
+      }
+    }
+  }
+}
+
+  
+
+void process_packet(tcp_packet *rcvpkt, FILE *fp, int sockfd,
+                    struct sockaddr_in *clientaddr, int clientlen) {
+  if (rcvpkt->hdr.seqno == next_expected_seqno) {
+    send_ack(rcvpkt, sockfd, clientaddr, clientlen);     // Send an acknowledgement to the sender that the packet has been received
+    write_to_file(rcvpkt, fp);     // If the packet is in order, write it to the file
+    manage_buffered_packet(rcvpkt, sockfd, clientaddr, clientlen, fp);  // Process any buffered packets that can now be processed
+  }
+  else if (rcvpkt->hdr.seqno > next_expected_seqno) {
+    // If the packet is out of order, buffer it
+    printf("Out of order packet with packet number and packet seqno: %d, %d\n",
+           rcvpkt->hdr.packet_number, rcvpkt->hdr.seqno);
+    buffer_packet(rcvpkt);
+    send_ack(rcvpkt, sockfd, clientaddr, clientlen);
+  } else {
+    printf(" Expected sequence number is greater than the received packet "
+           "sequence number. Packet already received\n");
+    send_ack(rcvpkt, sockfd, clientaddr, clientlen);
+  }
+}
+
+
 
 int main(int argc, char **argv) {
   int optval;
@@ -144,7 +170,7 @@ int main(int argc, char **argv) {
     error("ERROR on binding");
 
   clientlen = sizeof(clientaddr);
-  init_receiver_buffer(); // Initialize receiver buffer
+  init_receiver_buffer_packet(); // Initialize receiver buffer
 
   VLOG(DEBUG, "epoch time, bytes received, sequence number")
 
@@ -156,26 +182,21 @@ int main(int argc, char **argv) {
       error("ERROR in recvfrom");
     }
     recvpkt = (tcp_packet *)buffer;
-    printf("Received packet %d. Expected: %d\n", recvpkt->hdr.seqno,
-           next_expected_seqno);
+
+    printf("Received packet %d with data size %d. Expected: %d\n", recvpkt->hdr.seqno, recvpkt->hdr.data_size, next_expected_seqno);
+          
 
     assert(get_data_size(recvpkt) <= DATA_SIZE);
-
     // Check for end of file packet (with data size 0)
     if (recvpkt->hdr.data_size == 0) {
       VLOG(INFO, "End of file has been reached.");
+      //Send the acknowledgement to the sender that the file has been received
+      send_ack(recvpkt, sockfd, &clientaddr, clientlen);
       fclose(fp);
       close(sockfd);
       break;
     }
-
-
-    //int index = recvpkt->hdr.packet_number % MAX_BUFFER_SIZE;
-    printf("Packet number received: %d\n", recvpkt->hdr.packet_number);
-    //printf("Index: %d\n", index);
-    // Process the received packet
     process_packet(recvpkt, fp, sockfd, &clientaddr, clientlen);
   }
-
   return 0;
 }
