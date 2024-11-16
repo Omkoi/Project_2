@@ -30,7 +30,7 @@ int unacknowledged_packets = 0;
 int next_seqno = 0;
 int duplicate_acks = 0;
 int ack_wait = 0;
-
+int previous_received_ackno = 0;
 
 void start_timer();
 void stop_timer();
@@ -134,7 +134,7 @@ void wait_ack() {
     error("recvfrom");
   }
   recvpkt = (tcp_packet *)buffer;
-  printf("Received acknowledgement\n");
+  printf("Received acknowledgement ");
   printf("size and ackno %d, %d\n", recvpkt->hdr.data_size, recvpkt->hdr.ackno);
   if (recvpkt->hdr.ackno == 0) {
     printf("Received final acknowledgement for the end of file\n");
@@ -147,11 +147,19 @@ void wait_ack() {
   if (recvpkt->hdr.ackno >= sent_packets[0]->hdr.seqno + sent_packets[0]->hdr.data_size) {
     printf("Received ACK: %d,  expected: %d\n", recvpkt->hdr.ackno,
            sent_packets[0]->hdr.seqno + sent_packets[0]->hdr.data_size); //Expected sequence number is the sequence number of the next packet in the window
-    duplicate_acks = 0;
     //If the acknowledgement is received for the first packet of the window, remove it from the window
     if (recvpkt->hdr.ackno == sent_packets[0]->hdr.seqno + sent_packets[0]->hdr.data_size) {
-      printf("Received acknowledgement for the first packet of the window\n");
 
+      if (recvpkt->hdr.ackno == previous_received_ackno) {
+        printf("Receive a duplicate acknowledgement\n");
+        duplicate_acks = duplicate_acks + 1;
+        if (duplicate_acks == 3) {
+          resend_packets(duplicate_acks);
+        }
+      } else {
+        duplicate_acks = 0;
+      }
+      printf("Received acknowledgement for the first packet of the window\n");
       // Stopping the time when the acknowledgement is received for the first packet of the window
       stop_timer();
       sent_packets[0] = NULL;
@@ -174,9 +182,7 @@ void wait_ack() {
     }
     start_timer();
     window_end = window_end + 1;
-
   }
-
   //If the received ack is less than the expected seqno, it is a duplicate ack
   else {
     duplicate_acks = duplicate_acks + 1;
@@ -184,6 +190,7 @@ void wait_ack() {
       resend_packets(duplicate_acks);
     }
   }
+  previous_received_ackno = recvpkt->hdr.ackno;
 }
 
 
@@ -246,10 +253,11 @@ int main(int argc, char **argv) {
       // If unacknowledged packets are more than the window size, break
     if (unacknowledged_packets >= WINDOW_SIZE) {
       printf("Maximum window size reached. Waiting for acknowledgement\n");
-      wait_ack();
+      continue;
     }
-      //Else read the next packet from the file to send
+    // Else read the next packet from the file to send
     else {
+      while ((unacknowledged_packets < WINDOW_SIZE) && (eof_reached == 0)) {
       len = fread(buffer, 1, DATA_SIZE, fp);
       printf("Length: %d\n", len);
       
@@ -280,9 +288,14 @@ int main(int argc, char **argv) {
     //printf("Waiting for acknowledgement\n");
     wait_ack();
 
+    printf("EOF: %d, unacknowledged packets: %d\n", eof_reached,
+           unacknowledged_packets);
+
     if (eof_reached == 1 && unacknowledged_packets == 0) {
+      printf("End of file reached and acknowledgement received. Exiting the program\n");
       break;
     }
+  }
   }
   fclose(fp);
   close(sockfd);

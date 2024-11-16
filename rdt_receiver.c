@@ -42,7 +42,7 @@ void send_ack(tcp_packet *recvpkt, int sockfd, struct sockaddr_in *clientaddr,
 
   //Indicating the duplicate acknowledgement
   else if (recvpkt->hdr.seqno > next_expected_seqno) {
-    ackpkt->hdr.ackno = -1;
+    ackpkt->hdr.ackno = next_expected_seqno;
   }
 
   else if (next_expected_seqno > recvpkt->hdr.seqno) {
