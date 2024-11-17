@@ -32,572 +32,325 @@ tcp_packet
 
 sigset_t sigmask; // Signal mask for the timer
 
-int window_start = 0, window_end = 10, slide_end = 0;
-
-int seqno_to_ack = 0;
-
-int unacknowledged_packets = 0;
-
-int next_seqno = 0;
-
-int duplicate_acks = 0;
-
-int ack_wait = 0;
-
-int previous_received_ackno = 0;
+int slide_end = 0;              // The number of the last packet in the window
+int seqno_to_ack = 0;           // The sequence number to be acknowledged
+int unacknowledged_packets = 0; // The number of unacknowledged packets
+int next_seqno = 0;     // The sequence number of the next packet to be sent
+int duplicate_acks = 0; // The number of duplicate ACKs
 
 void start_timer();
-
 void stop_timer();
-
 void resend_packets(int sig);
-
 void send_packet(tcp_packet *pkt);
-
 void wait_ack();
-
-void shift_window();
-
 void init_sent_packets();
 
 // Initialize and start the timer
 
 void init_timer(int delay, void (*sig_handler)(int)) {
-
   signal(SIGALRM, sig_handler);
-
   struct itimerval timer;
-
   timer.it_interval.tv_sec = delay / 1000;
-
   timer.it_interval.tv_usec = (delay % 1000) * 1000;
-
   timer.it_value.tv_sec = delay / 1000;
-
   timer.it_value.tv_usec = (delay % 1000) * 1000;
-
   sigemptyset(&sigmask);
-
   sigaddset(&sigmask, SIGALRM);
-
   setitimer(ITIMER_REAL, &timer, NULL);
 }
 
 // Start the timer to handle retransmissions
-
 void start_timer() { sigprocmask(SIG_UNBLOCK, &sigmask, NULL); }
-
 // Stop the timer
-
 void stop_timer() { sigprocmask(SIG_BLOCK, &sigmask, NULL); }
 
 // Send the packet
-
 void send_packet(tcp_packet *pkt) {
 
+  // Sending the packet to the receiver
+  VLOG(DEBUG, "Sending packet %d to %s", pkt->hdr.seqno,
+       inet_ntoa(serveraddr.sin_addr));
   if (sendto(sockfd, pkt, TCP_HDR_SIZE + get_data_size(pkt), 0,
 
              (const struct sockaddr *)&serveraddr, serverlen) < 0) {
 
     error("sendto");
   }
-
-  printf("Sent packet with seqno: %d\n", pkt->hdr.seqno);
 }
 
+// Handle the resending of packets due to timeout and duplicate ACKs
 void resend_packets(int sig) {
-
   if (sig == SIGALRM) {
-
-    VLOG(INFO, "Timeout happened. Resending the first packet in the window.");
-
+    VLOG(INFO, "Timeout happened.");
+    // The packet to be resent is the first unacknowledged packet in the
+    // sent_packets window.
     tcp_packet *pkt_to_resend = sent_packets[0];
-
+    // Stopping the timer since the timeout has occurred
     stop_timer();
-
     if (pkt_to_resend->hdr.data_size == 0) {
+      // If the acknoledgement is received for the end of file, print a message
+      // and exit
+      //printf("End of file reached and acknowledgement received inside "
+             //"resend_packets.\n");
 
-      printf("End of file reached and acknowledgement received.\n");
+      // Stopping the timer and closing the socket
 
       stop_timer();
-
-      close(sockfd);
-
-      exit(0);
+      //sleep(2);
+      //close(sockfd); // Closing the socket
+      //exit(0);       // Exiting the program
     }
 
     send_packet(pkt_to_resend); // Resend the packet
-
-    start_timer(); // Restart the timer
-
-    // printf("Resending packet %d\n", pkt_to_resend->hdr.seqno);
-
-    // If there is a next packet in the window, set the sequence number to ack
-
-    // to the sequence number of the next packet.
+    start_timer();              // Restarting the timer
 
     if (sent_packets[1] != NULL) {
-
+      // Updating the sequence number to be acknowledged
       seqno_to_ack = sent_packets[1]->hdr.seqno;
     }
-
+    // If null, no next packets in the sent array.
   } else {
-
-    VLOG(INFO,
-
-         "3 duplicate ACK happened. Resending the first packet in the window.");
-
+    // If 3 duplicate ACKs are received, resend the first packet in the window.
+    // The packet to be resent is the first packet in the sent_packets window.
     tcp_packet *pkt_to_resend = sent_packets[0];
-
+    // Stopping the timer since the timeout has occurred
     stop_timer();
-
-    send_packet(pkt_to_resend); // Resend the packet
-
+    // Resending the packet
+    send_packet(pkt_to_resend);
+    // Restarting the timer
     start_timer(); // Restart the timer
-
-    printf("Resending packet %d\n", pkt_to_resend->hdr.seqno);
-
+    // Updating the sequence number to be acknowledged
     if (sent_packets[1] != NULL) {
-
       seqno_to_ack = sent_packets[1]->hdr.seqno;
     }
-
-    printf("Sequence number to ack: %d\n", seqno_to_ack);
   }
 }
 
-void shift_window() {
-
-  for (int i = 0; i < WINDOW_SIZE - 1; i++) {
-
-    if (sent_packets[i + 1] != NULL) {
-
-      sent_packets[i] = sent_packets[i + 1];
-
-      window_end++;
-
-      window_start++;
-
-    } else {
-
-      break;
-    }
-  }
-
-  // Clear the last slot of the window
-
-  sent_packets[WINDOW_SIZE - 1] = NULL;
-}
-
+// Wait for the acknowledgement
 void wait_ack() {
-
   char buffer[MSS_SIZE];
-
   tcp_packet *recvpkt;
 
+  // Receiving the acknowledgement
   if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr,
 
                (socklen_t *)&serverlen) < 0) {
-
     error("recvfrom");
   }
 
+  // Logging the acknowledgement
+  VLOG(INFO, "0");
+  // Converting the buffer to a tcp packet
   recvpkt = (tcp_packet *)buffer;
+  // If the acknowledgement is for the end of file, print a message and the
+  // number of unacknowledged packets Timer reseting after the acknowledgement
+  // is received
 
-  if (recvpkt->hdr.ackno == -1) {
 
-    printf("Received final acknowledgement for the end of file\n");
-
-    printf("Number of unacknowledged packets: %d\n", unacknowledged_packets);
+  if (sent_packets[0] != NULL && recvpkt->hdr.ackno == -1 &&
+      sent_packets[0]->hdr.data_size == 0) {
+    printf(
+        "End of File Reached and Acknowledged.\n");
+    close(sockfd);
+    exit(0);
+    stop_timer();
   }
 
-  // if (recvpkt->hdr.ackno >= sent_packets[0]->hdr.seqno +
-
-  // sent_packets[0]->hdr.data_size) {
-
-  //   stop_timer();
-
-  //   printf("Received ACK: %d,  expected: %d\n", recvpkt->hdr.ackno,
-
-  //          sent_packets[0]->hdr.seqno +
-
-  //              sent_packets[0]
-
-  //                  ->hdr.data_size); // Expected sequence number is the
-
-  //                  sequence
-
-  //                                    // number of the next packet in the
-
-  //                                    window
-
-  //   // If the acknowledgement is received for the first packet of the window,
-
-  //   // remove it from the window
-
-  //   // find the first packet in the window that is not acked
-
-  stop_timer();
 
   int i = 0;
-
+  // Finding the first packet in the window that is not acknowledged
   for (i = 0; i < WINDOW_SIZE; i++) {
-
     if (sent_packets[i] == NULL ||
-
         sent_packets[i]->hdr.seqno >= recvpkt->hdr.ackno) {
-
+      // if the index in the sent packet array is null or the acknowledgement is
+      // for the already acknowledged packet, break
       break;
     }
   }
-
-  // shift everything left by i packets
-
+  // Else acknowledge the packet and shift everything left by i packets
   for (int j = 0; j < WINDOW_SIZE - i; j++) {
-
     if (j + i >= WINDOW_SIZE) {
-
+      // If the index is out of bounds, set the slot to null
       sent_packets[j] = NULL;
-
     } else {
-
+      // Else shift the packet to the left by i packets
       sent_packets[j] = sent_packets[j + i];
     }
   }
-
+  // Setting the rest of the slots to null
   for (int j = WINDOW_SIZE - i; j < WINDOW_SIZE; j++) {
-
     sent_packets[j] = NULL;
   }
 
+  // If no packets are acknowledged from the window, increment the duplicate
+  // acknowledgement counter as the previous acknowledgement was received again
   if (i == 0) {
-
     duplicate_acks += 1;
-
+    // If 3 duplicate acknowledgements are received, resend the first packet in
+    // the window
     if (duplicate_acks == 3) {
-
-      VLOG(INFO, "3 duplicate ACKs received. Resending the first packet in the "
-                 "window.");
+      
+      VLOG(INFO, "3 duplicate ACKs happened.");
+      // Stopping the timer
       stop_timer();
+      // Resending the first packet in the window
       resend_packets(duplicate_acks);
+      // Restarting the timer
       start_timer();
 
       duplicate_acks = 0;
     }
-
   }
-
+  // Else acknowledge the packet and reset the duplicate acknowledgement counter
   else {
-
     duplicate_acks = 0;
   }
-
-  printf("Shifted window by %d packets\n", i);
-
+  // Decrementing the number of unacknowledged packets by the shifted number of
+  // packets
   unacknowledged_packets -= i;
-
   if (unacknowledged_packets > 0) {
-
+    // If there are still unacknowledged packets, restart the timer
     start_timer();
   }
-
-  //   if (recvpkt->hdr.ackno ==
-
-  //       sent_packets[0]->hdr.seqno + sent_packets[0]->hdr.data_size) {
-
-  //     if (recvpkt->hdr.ackno == previous_received_ackno) {
-
-  //       printf("Received a duplicate acknowledgement\n");
-
-  //       duplicate_acks = duplicate_acks + 1;
-
-  //       if (duplicate_acks == 3) {
-
-  //         stop_timer();
-
-  //         resend_packets(duplicate_acks);
-
-  //         start_timer();
-
-  //         duplicate_acks = 0;
-
-  //       }
-
-  //     } else {
-
-  //       duplicate_acks = 0;
-
-  //     }
-
-  //     stop_timer();
-
-  //     sent_packets[0] = NULL;
-
-  //     unacknowledged_packets--; // Subtract the number of unacknowledged
-
-  //     packets shift_window();
-
-  //   }
-
-  //   // If the acknowledgement is received for a packet other than the first
-
-  //   // packet of the window, shift the window upto that point
-
-  //   else {
-
-  //     printf("Received acknowledgement for a packet greater than the first
-
-  //     "
-
-  //            "packet of the window\n");
-
-  //     if (recvpkt->hdr.ackno == previous_received_ackno) {
-
-  //       printf("Received a duplicate acknowledgement\n");
-
-  //       duplicate_acks = duplicate_acks + 1;
-
-  //       if (duplicate_acks == 3) {
-
-  //         resend_packets(duplicate_acks);
-
-  //       }
-
-  //     } else {
-
-  //       duplicate_acks = 0;
-
-  //     }
-
-  //     while (sent_packets[0]->hdr.seqno + sent_packets[0]->hdr.data_size !=
-
-  //            recvpkt->hdr.ackno) {
-
-  //       shift_window();
-
-  //       unacknowledged_packets--;
-
-  //     }
-
-  //     sent_packets[0] = NULL;
-
-  //     unacknowledged_packets--;
-
-  //     shift_window();
-
-  //   }
-
-  //   start_timer();
-
-  //   window_end = window_end + 1;
-
-  // }
-
-  // // If the received ack is less than the expected seqno, it is a duplicate
-
-  // ack else {
-
-  //   if (recvpkt->hdr.ackno == previous_received_ackno) {
-
-  //     duplicate_acks = duplicate_acks + 1;
-
-  //     if (duplicate_acks == 3) { // If three times duplicate ack is
-
-  //     received,
-
-  //                                // resend the first packet in the window
-
-  //       resend_packets(duplicate_acks);
-
-  //     }
-
-  //   }
-
-  // }
-
-  // previous_received_ackno = recvpkt->hdr.ackno;
 }
 
+// Initialize the sent_packets array
 void init_sent_packets() {
-
   for (int i = 0; i < WINDOW_SIZE; i++) {
-
     sent_packets[i] = NULL;
   }
 }
 
-void print_buffer() {
-
-  for (int i = 0; i < WINDOW_SIZE; i++) {
-
-    if (sent_packets[i] == NULL) {
-
-      printf("NULL\n");
-
-    } else {
-
-      printf("Packet seqno: %d\n", sent_packets[i]->hdr.seqno);
-    }
-  }
-}
-
+// Add a packet to the sent_packets array
 void add_packet_to_window(tcp_packet *pkt) {
-
   for (int i = 0; i < WINDOW_SIZE; i++) {
-
+    // If the slot is empty, add the packet to the slot
     if (sent_packets[i] == NULL) {
-
       sent_packets[i] = pkt;
-
-      print_buffer();
-
       break;
+      // break out of the loop
     }
   }
 }
 
+// Main function
 int main(int argc, char **argv) {
-
-  int portno, len;
-
-  char *hostname;
-
-  char buffer[DATA_SIZE];
-
-  FILE *fp;
-
+  int portno, len;        // Port number and length of the packet
+  char *hostname;         // Hostname
+  char buffer[DATA_SIZE]; // Buffer to store the data
+  FILE *fp;               // File pointer
+  // Checking the number of arguments
   if (argc != 4) {
-
     fprintf(stderr, "usage: %s <hostname> <port> <FILE>\n", argv[0]);
-
+    // Exiting the program
     exit(0);
   }
-
+  // Assigning the hostname, port number and file pointer
   hostname = argv[1];
-
   portno = atoi(argv[2]);
-
+  // Opening the file in the read binary mode
   fp = fopen(argv[3], "rb");
-
+  // Checking if the file is opened successfully
   if (fp == NULL) {
-
     error(argv[3]);
   }
 
   sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-
   if (sockfd < 0)
-
     error("ERROR opening socket");
-
+  // Zeroing the server address
   bzero((char *)&serveraddr, sizeof(serveraddr));
-
+  // Setting the server address
   serverlen = sizeof(serveraddr);
-
+  // Checking if the hostname is valid
   if (inet_aton(hostname, &serveraddr.sin_addr) == 0) {
-
+    // If not, print an error message and exit
     fprintf(stderr, "ERROR, invalid host %s\n", hostname);
 
     exit(0);
   }
-
+  // Setting the server address
   serveraddr.sin_family = AF_INET;
-
-  serveraddr.sin_port = htons(portno);
-
+  serveraddr.sin_port = htons(portno); // Setting the port number
+  // Initializing the timer
   init_timer(RETRY, resend_packets);
-
-  init_sent_packets(); // Initialize the sent_packets array
-
+  // Initializing the sent_packets array
+  init_sent_packets();
+  // Initializing the end of file flag
   int eof_reached = 0;
 
   while (1) {
 
-    // If unacknowledged packets are more than the window size, break
-
+    // If unacknowledged packets is equal to the window size or the end of file
+    // is reached, break
     while ((unacknowledged_packets < WINDOW_SIZE) && (eof_reached == 0)) {
 
       len = fread(buffer, 1, DATA_SIZE, fp);
-
-      printf("Length: %d\n", len);
-
+      // If the length of the data read is 0, set the end of file flag to 1 and
+      // make a packet with no data
       if (len <= 0) {
-
+        // Printing the end of file message
         VLOG(INFO, "End Of File has been reached");
-
+        // Making a packet with no data
         tcp_packet *sndpkt = make_packet(0);
-
+        // Setting the sequence number of the packet
         sndpkt->hdr.seqno = next_seqno; // Starting byte of the packet
-
-        // sndpkt->hdr.packet_number = slide_end; // Tracking the packet number
-
         if (sent_packets[0] == NULL) {
-
+          // If the packet is the first packet in the sent_packets array, start
+          // the timer
           start_timer();
         }
-
+        // Adding the packet to the sent_packets array
         add_packet_to_window(sndpkt);
-
+        // Sending the packet
         send_packet(sndpkt);
-
+        // Updating the sequence number of the next packet
         next_seqno = next_seqno + len;
-
+        // Incrementing the number of unacknowledged packets
         unacknowledged_packets++;
-
+        // Setting the end of file flag to 1
         eof_reached = 1;
-
       }
-
+      // Else make a packet with the data read and send it
       else {
-
         tcp_packet *sndpkt = make_packet(len);
-
+        // Copying the data read to the packet
         memcpy(sndpkt->data, buffer, len);
-
+        // Setting the sequence number of the packet
         sndpkt->hdr.seqno = next_seqno; // Starting byte of the packet
-
-        // sndpkt->hdr.packet_number = slide_end; // Tracking the packet number
-
         if (sent_packets[0] == NULL) {
-
           start_timer();
         }
-
         add_packet_to_window(sndpkt);
-
+        // Sending the packet
         send_packet(sndpkt);
-
-        // printf("Packet number added to the window: %d\n", slide_end);
-
+        // Updating the sequence number of the next packet
         next_seqno = next_seqno + len;
-
+        // Incrementing the number of unacknowledged packets
         unacknowledged_packets++;
-
         slide_end++;
       }
     }
 
-    // printf("Waiting for acknowledgement\n");
-
     wait_ack();
-
-    printf("EOF: %d, unacknowledged packets: %d\n", eof_reached,
-
-           unacknowledged_packets);
-
+    // If the end of file is reached and there are no unacknowledged packets,
+    // print a message and exit
     if (eof_reached == 1 && unacknowledged_packets == 0) {
-
       printf("End of file reached and acknowledgement received. Exiting the "
-
              "program\n");
-
+      // Closing the file
+      fclose(fp);
+      // Closing the socket
+      close(sockfd);
+      // Exiting the program
       break;
     }
   }
 
+  // Closing the file
   fclose(fp);
-
+  // Closing the socket
   close(sockfd);
-
+  // Exiting the program
   return 0;
 }

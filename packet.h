@@ -25,8 +25,4 @@ typedef struct {
 tcp_packet* make_packet(int seq);
 int get_data_size(tcp_packet *pkt);
 
-typedef struct {
-    int is_occupied;
-    tcp_packet *pkt;
-} receiver_buffer_slot;
 
