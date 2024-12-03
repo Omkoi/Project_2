@@ -13,17 +13,23 @@
 #include <sys/time.h>
 
 #include <unistd.h>
+#include <errno.h>
 
 #include "common.h"
 
 #include "packet.h"
 
-#define MAX_BUFFER_SIZE 10 // Buffer for out-of-order packets
+#include "time.h"
+
+#define MAX_BUFFER_SIZE 64 // Buffer for out-of-order packets
 
 // Array to store the receiver buffer packets
 tcp_packet *receiver_buffer_packet[MAX_BUFFER_SIZE];
 int next_expected_seqno = 0; // The next expected sequence number
 int eof_received = 0; // Flag to check if the end of file has been received
+
+struct timeval timeout;
+
 
 // Initializing the receiver buffer packet window to NULL
 void init_receiver_buffer_packet() {
@@ -157,7 +163,10 @@ int main(int argc, char **argv) {
   struct timeval tp; //Time value
   // Check command line arguments
   if (argc != 3) {
-    fprintf(stderr, "usage: %s <port> FILE_RECVD\n", argv[0]);
+  // Initialize timeout
+  
+
+  // Check command line arguments
     exit(1);
   }
   portno = atoi(argv[1]); //Converting the port number to integer
@@ -189,14 +198,35 @@ int main(int argc, char **argv) {
 
   init_receiver_buffer_packet(); // Initialize receiver buffer
 
+  timeout.tv_sec = 10;
+  timeout.tv_usec = 0;
+  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
   VLOG(DEBUG, "epoch time, bytes received, sequence number");
   // Main loop
   while (1) {
 
     // Receive UDP datagram from client
-    if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&clientaddr, (socklen_t *)&clientlen) < 0) {
-      error("ERROR in recvfrom"); //If the packet is not received, print an error message and exit
-    }
+
+    int recv_result =
+        recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&clientaddr,
+                 (socklen_t *)&clientlen);
+    
+    if (recv_result < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (eof_received == 1){
+        VLOG(INFO, "No data received for 10 seconds. EOF reached.  Closing the connection.");
+        fclose(fp);
+        close(sockfd);
+        break;
+        }
+      }
+      else{
+        error("ERROR in recvfrom");}
+      }
+    
+
+    else{
 
     recvpkt = (tcp_packet *)buffer; //Converting the buffer to a tcp packet
 
@@ -219,6 +249,7 @@ int main(int argc, char **argv) {
       // break;
     }
     process_packet(recvpkt, fp, sockfd, &clientaddr, clientlen); //Processing the packet
-  }
+    }
+    }
   return 0;
 }
