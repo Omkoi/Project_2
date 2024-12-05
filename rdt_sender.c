@@ -44,7 +44,7 @@ struct timeval start_timeval;
 double start_time;
 
 FILE *cwnd_file;
-
+FILE *throughput_file;
 // Congestion Control Variables
 float cwnd = 1; // Congesion window size (Starts at 1)
 int ss_threshold = INITITAL_SS_THRESHHOLD;
@@ -105,6 +105,16 @@ void update_rtt(float sample_rtt) {
   VLOG(DEBUG, "RTT: %.2f,  RTO: %d", estimated_rtt,  rto);
 }
 
+void log_throughput(size_t packet_size) {
+    struct timeval current_timeval;
+    gettimeofday(&current_timeval, NULL);
+    double current_time = current_timeval.tv_sec + current_timeval.tv_usec / 1e6;
+
+    if (throughput_file != NULL) {
+        fprintf(throughput_file, "%.6f,%lu\n", current_time, packet_size);
+        fflush(throughput_file);
+    }
+}
 
 
 
@@ -143,14 +153,18 @@ void update_congestion_window(int is_timeout, int is_triple_dup) {
         cc_state = CONGESTION_AVOIDANCE;
         VLOG(DEBUG, "Entering Congestion Avoidance Phase: cwnd = %.2f", cwnd)
       }
-      else if (cc_state == CONGESTION_AVOIDANCE) {
-          cwnd = cwnd + 1.0/(int)cwnd;
-        }
+      else{
+
+      }
+
+    }
+    else if (cc_state == CONGESTION_AVOIDANCE) {
+      cwnd = cwnd + 1.0/(int)cwnd;
     }
     VLOG(DEBUG, "Updated cwnd = %.2f, state = %s", cwnd, cc_state == SLOW_START?"Slow_Start":"Congestion_Avoidance")
       
-    }
   }
+}
 
 
   
@@ -169,6 +183,7 @@ void send_packet(tcp_packet *pkt) {
 
   // print the time in milliseconds
   printf("Send Time: %ld\n", send_time.tv_sec * 1000 + send_time.tv_usec / 1000);
+  log_throughput(TCP_HDR_SIZE + get_data_size(pkt));
 
   VLOG(DEBUG, "Sending packet %d to %s", pkt->hdr.seqno,
        inet_ntoa(serveraddr.sin_addr));
@@ -425,6 +440,11 @@ int main(int argc, char **argv) {
   serveraddr.sin_port = htons(portno); // Setting the port number
   // Initializing the timer
   // Initializing the sent_packets array
+  throughput_file = fopen("throughput.csv", "w");
+  if (throughput_file == NULL) {
+      error("ERROR opening throughput.csv for logging");
+  }
+  fprintf(throughput_file, "time,bytes\n");
   init_sent_packets();
   // Initializing the end of file flag
   cwnd_file = fopen("CWND.csv", "w");

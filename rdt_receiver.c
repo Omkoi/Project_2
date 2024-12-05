@@ -21,7 +21,7 @@
 
 #include "time.h"
 
-#define MAX_BUFFER_SIZE 64 // Buffer for out-of-order packets
+#define MAX_BUFFER_SIZE 70 // Buffer for out-of-order packets
 
 // Array to store the receiver buffer packets
 tcp_packet *receiver_buffer_packet[MAX_BUFFER_SIZE];
@@ -53,8 +53,6 @@ int clientlen, FILE *fp) {
     //printf("Sending ack for the end of file packet received\n");
     ackpkt->hdr.ackno = -1; //Setting the ackno to -1 to indicate the end of the file
   }
-
-
   
   // Sending the ACK to the sender
   if (sendto(sockfd, ackpkt, TCP_HDR_SIZE, 0, (struct sockaddr *)clientaddr,
@@ -69,30 +67,44 @@ int clientlen, FILE *fp) {
 // Does insertion sorting to add packets in order
 void buffer_packet(tcp_packet *rcvpkt) {
 
-  if (rcvpkt->hdr.seqno < next_expected_seqno) { //If the packet is already received and written to the file.
-    return;
+  // Allocate memory for the new packet
+  tcp_packet *new_packet = (tcp_packet *)malloc(sizeof(char) * MSS_SIZE);
+  if (!new_packet) {
+    error("Memory allocation failed");
   }
+
+  // Copy header first
+  memcpy(&new_packet->hdr, &rcvpkt->hdr, sizeof(tcp_header));
+
+  // Manually copy the data array
+  for (int i = 0; i < rcvpkt->hdr.data_size; i++) {
+    new_packet->data[i] = rcvpkt->data[i];
+  }
+
   // Checking if the packet is already in the buffer but yet to be written to
   // the file. Duplicate packets should not be added to the buffer. So we
   // return.
+
   //Loop through the buffer to check if the packet is already in the buffer.
   for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
-    if (receiver_buffer_packet[i] != NULL && //if the index is not NULL and the seqno matches
-        receiver_buffer_packet[i]->hdr.seqno == rcvpkt->hdr.seqno) {
+    if (receiver_buffer_packet[i] !=
+            NULL && // if the index is not NULL and the seqno matches
+        receiver_buffer_packet[i]->hdr.seqno == new_packet->hdr.seqno) {
+      free(new_packet); //Free the memory allocated for the new packet since it is a duplicate
       return;
     }
   }
   //Loop through the buffer to find the correct position to insert the packet.
   for (int i = 0; i < MAX_BUFFER_SIZE; i++) {
     if (receiver_buffer_packet[i] == NULL || //if the index is NULL or the seqno is greater than the seqno of the packet to be inserted
-        receiver_buffer_packet[i]->hdr.seqno > rcvpkt->hdr.seqno) {
+        receiver_buffer_packet[i]->hdr.seqno > new_packet->hdr.seqno) {
       // Shift everything right starting from this position
       for (int j = MAX_BUFFER_SIZE - 1; j > i; j--) {
         if (receiver_buffer_packet[j - 1] != NULL) {
           receiver_buffer_packet[j] = receiver_buffer_packet[j - 1];
         }
       }
-      receiver_buffer_packet[i] = rcvpkt; //Inserting the packet in the correct inedex
+      receiver_buffer_packet[i] = new_packet; //Inserting the packet in the correct index
       break;
     }
   }
@@ -116,19 +128,26 @@ void manage_buffered_packet(tcp_packet *rcvpkt, int sockfd,
       shift++;
       next_expected_seqno += receiver_buffer_packet[i]->hdr.data_size; //Updating the next expected sequence number
       // Write to the file since the packet is in order
-      fwrite(receiver_buffer_packet[i]->data, 1,
 
+      if (receiver_buffer_packet[i]->hdr.data_size == 0){
+        break;
+      }
+
+      fwrite(receiver_buffer_packet[i]->data, 1,
              receiver_buffer_packet[i]->hdr.data_size, fp);
       fflush(fp);
+      free(receiver_buffer_packet[i]); //Free the memory allocated for the packet since it has been written to the file
     }
   }
 
   // left shift the receiver buffer by shift packets as they are written to the file since they were in order
-  for (int i = shift; i < MAX_BUFFER_SIZE; i++) {
-    receiver_buffer_packet[i - shift] = receiver_buffer_packet[i];
-  }
-  for (int i = MAX_BUFFER_SIZE - shift; i < MAX_BUFFER_SIZE; i++) {
-    receiver_buffer_packet[i] = NULL; //Setting the remaining indices to NULL
+  if (shift!=0){
+    for (int i = shift; i < MAX_BUFFER_SIZE; i++) {
+      receiver_buffer_packet[i - shift] = receiver_buffer_packet[i];
+    }
+    for (int i = MAX_BUFFER_SIZE - shift; i < MAX_BUFFER_SIZE; i++) {
+      receiver_buffer_packet[i] = NULL; //Setting the remaining indices to NULL
+    }
   }
 }
 
@@ -253,3 +272,4 @@ int main(int argc, char **argv) {
     }
   return 0;
 }
+
